@@ -15,6 +15,9 @@ preferWorkspacePackages: true
 
 linkWorkspacePackages: deep
 
+overrides:
+    typescript: 6.0.3
+
 onlyBuiltDependencies:
     - "@biomejs/biome"
     - "@parcel/watcher"
