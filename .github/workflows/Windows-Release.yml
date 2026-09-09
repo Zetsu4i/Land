@@ -106,7 +106,7 @@ jobs:
                   path: |
                       node_modules
                       **/node_modules
-                  key: ${{ runner.os }}-node-modules-v2-${{ hashFiles('package.json', 'pnpm-workspace.yaml', '**/package.json', '**/pnpm-lock.yaml') }}
+                  key: ${{ runner.os }}-node-modules-v2-${{ hashFiles('package.json', 'pnpm-workspace.yaml', '**/package.json', '**/pnpm-lock.yaml', '**/package-lock.json') }}
                   restore-keys: |
                       ${{ runner.os }}-node-modules-v2-
 
@@ -219,16 +219,23 @@ jobs:
               working-directory: Dependency/Microsoft/Dependency/Editor
               shell: bash
               run: |
-                  pnpm install --ignore-workspace --no-frozen-lockfile --prefer-offline --reporter=append-only
+                  npm install --ignore-scripts --no-audit --no-fund --legacy-peer-deps --no-package-lock
+                  npm install --no-save --ignore-scripts --no-audit --no-fund --legacy-peer-deps \
+                      esbuild@0.28.1 \
+                      glob@7.2.3 \
+                      gulp-merge-json@2.2.1 \
+                      gulp-sort@2.0.0 \
+                      gulp-vinyl-zip@2.5.0 \
+                      jsonc-parser@3.3.1 \
+                      minimatch@3.1.2 \
+                      rcedit@2.3.0 \
+                      rimraf@3.0.2 \
+                      ternary-stream@3.0.0 \
+                      vscode-gulp-watch@5.0.3
                   if [[ ! -f out/vs/base/common/uri.js ]]; then
-                      pnpm run compile
+                      npm run gulp -- compile-client
                   else
                       echo "Using cached VS Code compile output"
-                  fi
-                  if [[ ! -d .build/extensions ]]; then
-                      pnpm run compile-extensions-build
-                  else
-                      echo "Using cached VS Code extension output"
                   fi
 
             - name: Install Land dependencies
