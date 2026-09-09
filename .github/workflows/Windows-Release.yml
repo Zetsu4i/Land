@@ -233,7 +233,7 @@ jobs:
                       ternary-stream@3.0.0 \
                       vscode-gulp-watch@5.0.3
                   if [[ ! -f out/vs/base/common/uri.js ]]; then
-                      npm run gulp -- compile-client
+                      npm run gulp -- transpile-client
                   else
                       echo "Using cached VS Code compile output"
                   fi
