@@ -88,7 +88,7 @@ jobs:
 
             - name: Build frontend artifacts
               shell: bash
-              run: pnpm run prepublishOnly --filter=@codeeditorland/sky --force
+              run: REST_SKIP_BUILD=true pnpm run prepublishOnly --filter=@codeeditorland/sky --force
 
             - name: Upload frontend artifacts
               uses: actions/upload-artifact@v4
