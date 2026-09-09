@@ -110,6 +110,16 @@ jobs:
                   restore-keys: |
                       ${{ runner.os }}-node-modules-v2-
 
+            - name: Cache VS Code platform build
+              uses: actions/cache@v4
+              with:
+                  path: |
+                      Dependency/Microsoft/Dependency/Editor/out
+                      Dependency/Microsoft/Dependency/Editor/.build
+                  key: ${{ runner.os }}-vscode-build-v2-${{ hashFiles('Dependency/Microsoft/Dependency/Editor/package.json', 'Dependency/Microsoft/Dependency/Editor/pnpm-lock.yaml') }}
+                  restore-keys: |
+                      ${{ runner.os }}-vscode-build-v2-
+
             - name: Set up Rust
               uses: dtolnay/rust-toolchain@master
               with:
@@ -209,13 +219,25 @@ jobs:
               working-directory: Dependency/Microsoft/Dependency/Editor
               shell: bash
               run: |
-                  pnpm install --frozen-lockfile --prefer-offline --reporter=append-only
-                  pnpm run compile
-                  pnpm run compile-extensions-build
+                  pnpm install --ignore-workspace --no-frozen-lockfile --prefer-offline --reporter=append-only
+                  if [[ ! -f out/vs/base/common/uri.js ]]; then
+                      pnpm run compile
+                  else
+                      echo "Using cached VS Code compile output"
+                  fi
+                  if [[ ! -d .build/extensions ]]; then
+                      pnpm run compile-extensions-build
+                  else
+                      echo "Using cached VS Code extension output"
+                  fi
 
             - name: Install Land dependencies
               shell: bash
               run: pnpm install --no-frozen-lockfile --prefer-offline --reporter=append-only
+
+            - name: Prepare frontend build inputs
+              shell: bash
+              run: bash Maintain/CI/PrepareFrontend.sh
 
             - name: Remove stale bundle outputs
               shell: bash
