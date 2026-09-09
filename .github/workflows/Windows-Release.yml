@@ -134,6 +134,44 @@ jobs:
                   restore-keys: |
                       ${{ runner.os }}-x64-rust-tauri-v3-
 
+            - name: Cache embedded Windows Node runtime
+              uses: actions/cache@v4
+              with:
+                  path: Element/SideCar/x86_64-pc-windows-msvc/NODE/24/node.exe
+                  key: ${{ runner.os }}-embedded-node-v1-${{ hashFiles('Element/SideCar/Cache.json') }}
+                  restore-keys: |
+                      ${{ runner.os }}-embedded-node-v1-
+
+            - name: Prepare embedded Windows Node runtime
+              shell: pwsh
+              run: |
+                  $cache = Get-Content 'Element/SideCar/Cache.json' -Raw | ConvertFrom-Json
+                  $version = $cache.Entries.'x86_64-pc-windows-msvc/NODE/24'
+                  if ([string]::IsNullOrWhiteSpace($version)) {
+                      throw 'Element/SideCar/Cache.json has no Windows Node 24 entry'
+                  }
+
+                  $destination = Join-Path $PWD 'Element/SideCar/x86_64-pc-windows-msvc/NODE/24'
+                  $node = Join-Path $destination 'node.exe'
+                  if (-not (Test-Path $node)) {
+                      New-Item -ItemType Directory -Force -Path $destination | Out-Null
+                      $archive = "node-$version-win-x64.zip"
+                      $archivePath = Join-Path $env:RUNNER_TEMP $archive
+                      $url = "https://nodejs.org/dist/$version/$archive"
+                      Write-Host "Downloading embedded Node runtime from $url"
+                      Invoke-WebRequest -Uri $url -OutFile $archivePath -UseBasicParsing
+                      $extract = Join-Path $env:RUNNER_TEMP "node-$version-win-x64"
+                      Remove-Item $extract -Recurse -Force -ErrorAction SilentlyContinue
+                      Expand-Archive -Path $archivePath -DestinationPath $env:RUNNER_TEMP -Force
+                      Copy-Item (Join-Path $extract 'node.exe') $node -Force
+                  }
+
+                  $bytes = [System.IO.File]::ReadAllBytes($node)
+                  if ($bytes.Length -lt 2 -or $bytes[0] -ne 0x4d -or $bytes[1] -ne 0x5a) {
+                      throw "Embedded Node runtime is not a Windows executable: $node"
+                  }
+                  Write-Host "Embedded Node runtime ready: $node ($($bytes.Length) bytes)"
+
             - name: Write release product metadata
               shell: bash
               env:
