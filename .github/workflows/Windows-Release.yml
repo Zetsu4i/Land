@@ -26,6 +26,9 @@ env:
     ASTRO_TELEMETRY_DISABLED: 1
     NEXT_TELEMETRY_DISABLED: 1
     NODE_OPTIONS: --max-old-space-size=8192
+    # Release/Build.sh intentionally selects esbuild, so do not build the
+    # optional Rest compiler as a side effect of the frontend prepublish graph.
+    REST_SKIP_BUILD: true
     RUST_LOG: warn
 
 jobs:

@@ -26,6 +26,10 @@ jobs:
             ASTRO_TELEMETRY_DISABLED: 1
             NEXT_TELEMETRY_DISABLED: 1
             NODE_OPTIONS: --max-old-space-size=8192
+            # The release pipeline uses esbuild. Rest's optional native
+            # compiler is not part of the frontend artifact and would trigger
+            # a separate Cargo build during Turbo's prepublish graph.
+            REST_SKIP_BUILD: true
 
         strategy:
             matrix:
