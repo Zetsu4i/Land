@@ -276,6 +276,18 @@ jobs:
                   path: release-build.log
                   if-no-files-found: warn
 
+            - name: Annotate release log on failure
+              if: failure()
+              shell: bash
+              run: |
+                  set +e
+                  tail -80 release-build.log | while IFS= read -r line; do
+                      line=${line//'%'/'%25'}
+                      line=${line//$'\r'/'%0D'}
+                      line=${line//$'\n'/'%0A'}
+                      echo "::error file=.github,line=4633,title=Build release::$line"
+                  done
+
             - name: Collect and validate NSIS installer
               id: installer
               shell: pwsh
