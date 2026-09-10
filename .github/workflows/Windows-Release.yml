@@ -261,9 +261,20 @@ jobs:
                   # platform formats. The CLI forwards this to Tauri.
                   TAURI_BUILD_ARGS: --bundles nsis
               run: |
-                  set -euo pipefail
-                  cargo build --release -p Maintain
-                  bash Maintain/Release/Build.sh --profile release
+                  set -o pipefail
+                  {
+                      set -euo pipefail
+                      cargo build --release -p Maintain
+                      bash Maintain/Release/Build.sh --profile release
+                  } 2>&1 | tee release-build.log
+
+            - name: Upload release build log on failure
+              if: failure()
+              uses: actions/upload-artifact@v4
+              with:
+                  name: windows-release-build-log-${{ github.run_number }}
+                  path: release-build.log
+                  if-no-files-found: warn
 
             - name: Collect and validate NSIS installer
               id: installer
