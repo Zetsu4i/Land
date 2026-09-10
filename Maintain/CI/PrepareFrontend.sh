@@ -276,6 +276,28 @@ if (start !== -1) {
 NODE
 fi
 
+# Production Sky builds include roughly 2.5 GB of copied VS Code assets. The
+# optional Brotli/gzip integration walks that tree after the Astro build and
+# can exhaust a hosted runner's time budget; the executable does not depend on
+# compressed web assets. Keep compression for local production builds, but
+# skip it in CI where the uncompressed assets are what Tauri packages.
+if [[ -f "$SKY_CONFIG" ]] && grep -q '!On ? CompressBundle : null' "$SKY_CONFIG"; then
+    node - "$SKY_CONFIG" <<'NODE'
+const fs = require("node:fs");
+const file = process.argv[2];
+let source = fs.readFileSync(file, "utf8");
+const pattern = /!On \? CompressBundle : null,/;
+if (pattern.test(source)) {
+  source = source.replace(
+    pattern,
+    'process.env["CI"] === "true" ? null : !On ? CompressBundle : null,',
+  );
+  fs.writeFileSync(file, source);
+  console.log("Disabled Sky asset compression for CI builds");
+}
+NODE
+fi
+
 # Rolldown requires moduleSideEffects callbacks to return booleans; Rollup's
 # legacy `no-external` sentinel is rejected by Vite 8.
 if [[ -f "$SKY_CONFIG" ]] && grep -q 'return "no-external";' "$SKY_CONFIG"; then
