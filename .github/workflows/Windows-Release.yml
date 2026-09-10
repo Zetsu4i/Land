@@ -127,6 +127,11 @@ jobs:
                   targets: x86_64-pc-windows-msvc
                   components: rust-src
 
+            - name: Set up protoc
+              uses: arduino/setup-protoc@v3
+              with:
+                  repo-token: ${{ secrets.GITHUB_TOKEN }}
+
             - name: Generate Cargo lockfile
               shell: bash
               run: cargo generate-lockfile --manifest-path Cargo.toml
