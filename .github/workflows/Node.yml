@@ -131,5 +131,5 @@ jobs:
               uses: actions/upload-artifact@v4
               with:
                   name: .-Node-${{ matrix.node-version }}-Target
-                  path: ./Target
+                  path: ./Element/Sky/Target
                   if-no-files-found: error
