@@ -20,76 +20,53 @@ jobs:
         runs-on: ubuntu-latest
 
         env:
-            ADBLOCK: true
-            ASTRO_TELEMETRY_DISABLED: 1
-            AUTOMATEDLAB_TELEMETRY_OPTOUT: 1
-            AZURE_CORE_COLLECT_TELEMETRY: 0
-            CHOOSENIM_NO_ANALYTICS: 1
-            DIEZ_DO_NOT_TRACK: 1
-            DO_NOT_TRACK: 1
-            DOTNET_CLI_TELEMETRY_OPTOUT: 1
-            DOTNET_INTERACTIVE_CLI_TELEMETRY_OPTOUT: 1
-            ET_NO_TELEMETRY: 1
-            GATSBY_TELEMETRY_DISABLED: 1
-            GATSBY_TELEMETRY_OPT_OUT: 1
-            GATSBY_TELEMETRY_OPTOUT: 1
-            GRIT_TELEMETRY_DISABLED: 1
-            HASURA_GRAPHQL_ENABLE_TELEMETRY: false
-            HINT_TELEMETRY: off
-            HOMEBREW_NO_ANALYTICS: 1
-            INFLUXD_REPORTING_DISABLED: true
-            ITERATIVE_DO_NOT_TRACK: 1
-            NEXT_TELEMETRY_DEBUG: 1
-            NEXT_TELEMETRY_DISABLED: 1
-            NG_CLI_ANALYTICS: false
-            NUXT_TELEMETRY_DISABLED: 1
-            PIN_DO_NOT_TRACK: 1
-            POWERSHELL_TELEMETRY_OPTOUT: 1
-            SAM_CLI_TELEMETRY: 0
-            STNOUPGRADE: 1
-            STRIPE_CLI_TELEMETRY_OPTOUT: 1
-            TELEMETRY_DISABLED: 1
-            TERRAFORM_TELEMETRY: 0
-            VCPKG_DISABLE_METRICS: 1
+            CI: true
+            RUST_LOG: warn
 
         strategy:
             matrix:
-                toolchain: ["stable", "nightly"]
+                # The repository is pinned to nightly in rust-toolchain.toml.
+                # Building one matching toolchain avoids paying twice for the
+                # same dependency graph while still exercising the real build.
+                toolchain: [nightly]
 
         steps:
-            - uses: actions/checkout@v6.0.2
+            - name: Check out repository
+              uses: actions/checkout@v6
               with:
                   fetch-depth: 1
                   submodules: false
 
-            # The repository records submodules with SSH URLs. GitHub-hosted
-            # runners do not have an SSH key, so fetch them using GITHUB_TOKEN.
-            - name: Checkout submodules
+            - name: Check out build submodules
               shell: bash
-              env:
-                  GH_TOKEN: ${{ github.token }}
-              run: |
-                  set -euo pipefail
-                  git config --global url."https://x-access-token:${GH_TOKEN}@github.com/".insteadOf "ssh://git@github.com/"
-                  git config --global url."https://x-access-token:${GH_TOKEN}@github.com/".insteadOf "git@github.com:"
-                  git submodule update --init --recursive
+              run: bash Maintain/CI/CheckoutSubmodules.sh rust
 
-            - uses: actions-rs/toolchain@v1.0.7
+            - name: Set up Rust
+              uses: dtolnay/rust-toolchain@master
               with:
-                  profile: minimal
                   toolchain: ${{ matrix.toolchain }}
+                  targets: x86_64-unknown-linux-gnu
+                  components: rust-src
 
-            - uses: actions/cache@v5.0.5
+            - name: Generate Cargo lockfile
+              shell: bash
+              run: cargo generate-lockfile --manifest-path Cargo.toml
+
+            - name: Cache Cargo, Tauri, and unchanged build artifacts
+              uses: actions/cache@v4
               with:
                   path: |
-                      ~/.cargo/bin/
-                      ~/.cargo/registry/index/
-                      ~/.cargo/registry/cache/
-                      ~/.cargo/git/db/
-                      target/
-                      Target/
-                  key: ${{ runner.os }}-cargo-${{ hashFiles('./Cargo.toml') }}
-            - uses: actions-rs/cargo@v1.0.3
-              with:
-                command: build
-                args: --release --all-features --manifest-path ./Cargo.toml
+                      ~/.cargo/registry/index
+                      ~/.cargo/registry/cache
+                      ~/.cargo/git/db
+                      Target
+                      Element/**/Target
+                      ~/.cache/tauri
+                      ~/.tauri
+                  key: ${{ runner.os }}-${{ matrix.toolchain }}-rust-tauri-v3-${{ hashFiles('Cargo.toml', 'Cargo.lock', 'rust-toolchain.toml', '**/Cargo.toml', '**/Cargo.lock') }}
+                  restore-keys: |
+                      ${{ runner.os }}-${{ matrix.toolchain }}-rust-tauri-v3-
+
+            - name: Build Rust workspace
+              shell: bash
+              run: cargo build --release --all-features --manifest-path ./Cargo.toml

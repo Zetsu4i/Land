@@ -1,14 +1,14 @@
 [submodule "Dependency"]
 path = Dependency
-url = ssh://git@github.com/CodeEditorLand/Dependency.git
+url = https://github.com/DependencyCodeEditorLand/Dependency.git
 ignore = all
 
 [submodule "Element"]
 path = Element
-url = ssh://git@github.com/CodeEditorLand/Element.git
+url = https://github.com/CodeEditorLand/Element.git
 ignore = all
 
 [submodule "Documentation/Rust"]
 path = Documentation/Rust
-url = ssh://git@github.com/CodeEditorLand/RustDocumentationLand.git
+url = https://github.com/DocumentationCodeEditorLand/RustDocumentationLand.git
 ignore = all

@@ -1,8 +1,7 @@
 name: Windows Release
 
-# Builds the signed-by-GitHub (unsigned installer) NSIS package and publishes it
-# as a GitHub release. The application version comes from the tag; the immutable
-# GitHub run number is kept separately as the build number.
+# Builds the Windows NSIS installer and publishes it as a GitHub release.
+# Releases are created by pushing a v* tag or by manually supplying a version.
 
 concurrency:
     group: Windows-Release-${{ github.ref }}
@@ -27,6 +26,9 @@ env:
     ASTRO_TELEMETRY_DISABLED: 1
     NEXT_TELEMETRY_DISABLED: 1
     NODE_OPTIONS: --max-old-space-size=8192
+    # Release/Build.sh intentionally selects esbuild, so do not build the
+    # optional Rest compiler as a side effect of the frontend prepublish graph.
+    REST_SKIP_BUILD: true
     RUST_LOG: warn
 
 jobs:
@@ -39,19 +41,13 @@ jobs:
               uses: actions/checkout@v6
               with:
                   fetch-depth: 0
-                  # Submodules use SSH URLs in .gitmodules. They are checked
-                  # out below over HTTPS using the workflow token instead.
+                  # Submodules are initialized by the CI helper. The helper
+                  # rewrites SSH URLs and skips stale optional gitlinks.
                   submodules: false
 
-            - name: Check out submodules over HTTPS
+            - name: Check out build submodules
               shell: bash
-              env:
-                  GH_TOKEN: ${{ github.token }}
-              run: |
-                  set -euo pipefail
-                  git config --global url."https://x-access-token:${GH_TOKEN}@github.com/".insteadOf "ssh://git@github.com/"
-                  git config --global url."https://x-access-token:${GH_TOKEN}@github.com/".insteadOf "git@github.com:"
-                  git submodule update --init --recursive
+              run: bash Maintain/CI/CheckoutSubmodules.sh all
 
             - name: Resolve version and build number
               id: metadata
@@ -68,8 +64,11 @@ jobs:
                       version="${INPUT_VERSION}"
                   fi
 
-                  if [[ ! "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+([.-][0-9A-Za-z.-]+)?$ ]]; then
-                      echo "Version must be a semantic version, got: $version" >&2
+                  # Windows installer metadata accepts a three-part SemVer.
+                  # Rejecting prereleases here prevents NSIS from receiving an
+                  # invalid four-part Windows file version.
+                  if [[ ! "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+                      echo "Version must be a stable semantic version (x.y.z), got: $version" >&2
                       exit 1
                   fi
 
@@ -78,79 +77,244 @@ jobs:
                   echo "tag=v$version" >> "$GITHUB_OUTPUT"
                   echo "Building version $version, build $RUN_NUMBER"
 
+            - name: Set up Node.js
+              uses: actions/setup-node@v6
+              with:
+                  node-version: 24
+
             - name: Set up pnpm
               uses: pnpm/action-setup@v6
               with:
                   version: 11.18.0
 
-            - name: Set up Node.js
-              uses: actions/setup-node@v6
+            - name: Locate pnpm store
+              id: pnpm-store
+              shell: bash
+              run: echo "path=$(pnpm store path --silent)" >> "$GITHUB_OUTPUT"
+
+            - name: Cache pnpm store
+              uses: actions/cache@v4
               with:
-                  node-version: 24
-                  cache: pnpm
-                  cache-dependency-path: pnpm-lock.yaml
+                  path: ${{ steps.pnpm-store.outputs.path }}
+                  key: ${{ runner.os }}-pnpm-v2-${{ hashFiles('package.json', 'pnpm-workspace.yaml', '**/package.json', '**/pnpm-lock.yaml') }}
+                  restore-keys: |
+                      ${{ runner.os }}-pnpm-v2-
+
+            - name: Cache Node dependencies
+              uses: actions/cache@v4
+              with:
+                  path: |
+                      node_modules
+                      **/node_modules
+                  key: ${{ runner.os }}-node-modules-v2-${{ hashFiles('package.json', 'pnpm-workspace.yaml', '**/package.json', '**/pnpm-lock.yaml', '**/package-lock.json') }}
+                  restore-keys: |
+                      ${{ runner.os }}-node-modules-v2-
+
+            - name: Cache VS Code platform build
+              uses: actions/cache@v4
+              with:
+                  path: |
+                      Dependency/Microsoft/Dependency/Editor/out
+                      Dependency/Microsoft/Dependency/Editor/.build
+                  key: ${{ runner.os }}-vscode-build-v2-${{ hashFiles('Dependency/Microsoft/Dependency/Editor/package.json', 'Dependency/Microsoft/Dependency/Editor/pnpm-lock.yaml') }}
+                  restore-keys: |
+                      ${{ runner.os }}-vscode-build-v2-
 
             - name: Set up Rust
-              uses: dtolnay/rust-toolchain@stable
+              uses: dtolnay/rust-toolchain@master
               with:
+                  toolchain: nightly
                   targets: x86_64-pc-windows-msvc
+                  components: rust-src
+
+            - name: Generate Cargo lockfile
+              shell: bash
+              run: cargo generate-lockfile --manifest-path Cargo.toml
+
+            - name: Cache Rust, Tauri, and unchanged build artifacts
+              uses: actions/cache@v4
+              with:
+                  path: |
+                      ~/.cargo/registry/index
+                      ~/.cargo/registry/cache
+                      ~/.cargo/git/db
+                      Target
+                      Element/**/Target
+                      ~/.cache/tauri
+                      ~/.tauri
+                      ~/AppData/Local/tauri
+                  key: ${{ runner.os }}-x64-rust-tauri-v3-${{ hashFiles('Cargo.toml', 'Cargo.lock', 'rust-toolchain.toml', '**/Cargo.toml', '**/Cargo.lock') }}
+                  restore-keys: |
+                      ${{ runner.os }}-x64-rust-tauri-v3-
+
+            - name: Cache embedded Windows Node runtime
+              uses: actions/cache@v4
+              with:
+                  path: Element/SideCar/x86_64-pc-windows-msvc/NODE/24/node.exe
+                  key: ${{ runner.os }}-embedded-node-v1-${{ hashFiles('Element/SideCar/Cache.json') }}
+                  restore-keys: |
+                      ${{ runner.os }}-embedded-node-v1-
+
+            - name: Prepare embedded Windows Node runtime
+              shell: pwsh
+              run: |
+                  $cache = Get-Content 'Element/SideCar/Cache.json' -Raw | ConvertFrom-Json
+                  $version = $cache.Entries.'x86_64-pc-windows-msvc/NODE/24'
+                  if ([string]::IsNullOrWhiteSpace($version)) {
+                      throw 'Element/SideCar/Cache.json has no Windows Node 24 entry'
+                  }
+
+                  $destination = Join-Path $PWD 'Element/SideCar/x86_64-pc-windows-msvc/NODE/24'
+                  $node = Join-Path $destination 'node.exe'
+                  if (-not (Test-Path $node)) {
+                      New-Item -ItemType Directory -Force -Path $destination | Out-Null
+                      $archive = "node-$version-win-x64.zip"
+                      $archivePath = Join-Path $env:RUNNER_TEMP $archive
+                      $url = "https://nodejs.org/dist/$version/$archive"
+                      Write-Host "Downloading embedded Node runtime from $url"
+                      Invoke-WebRequest -Uri $url -OutFile $archivePath -UseBasicParsing
+                      $extract = Join-Path $env:RUNNER_TEMP "node-$version-win-x64"
+                      Remove-Item $extract -Recurse -Force -ErrorAction SilentlyContinue
+                      Expand-Archive -Path $archivePath -DestinationPath $env:RUNNER_TEMP -Force
+                      Copy-Item (Join-Path $extract 'node.exe') $node -Force
+                  }
+
+                  $bytes = [System.IO.File]::ReadAllBytes($node)
+                  if ($bytes.Length -lt 2 -or $bytes[0] -ne 0x4d -or $bytes[1] -ne 0x5a) {
+                      throw "Embedded Node runtime is not a Windows executable: $node"
+                  }
+                  Write-Host "Embedded Node runtime ready: $node ($($bytes.Length) bytes)"
 
             - name: Write release product metadata
               shell: bash
               env:
                   PRODUCT_VERSION: ${{ steps.metadata.outputs.version }}
                   PRODUCT_BUILD_NUMBER: ${{ steps.metadata.outputs.build_number }}
+                  PRODUCT_COMMIT: ${{ github.sha }}
               run: |
                   set -euo pipefail
                   cp .env.Land.Sample .env.Land
-                  # Keep ProductVersion as the single source used by Mountain,
-                  # Sky and the Tauri bundle. Build number is release metadata
-                  # and must not change the Windows four-part app version.
                   sed -i -E "s/^ProductVersion=.*/ProductVersion=\"${PRODUCT_VERSION}\"/" .env.Land
                   sed -i -E 's/^ProductQuality=.*/ProductQuality="stable"/' .env.Land
+                  sed -i -E "s/^ProductCommit=.*/ProductCommit=\"${PRODUCT_COMMIT}\"/" .env.Land
                   printf '\nProductBuildNumber="%s"\n' "$PRODUCT_BUILD_NUMBER" >> .env.Land
-                  grep -E '^(ProductVersion|ProductBuildNumber|ProductQuality)=' .env.Land
+                  grep -E '^(ProductVersion|ProductCommit|ProductBuildNumber|ProductQuality)=' .env.Land
+
+                  # Maintain derives the Tauri bundle version from the
+                  # Mountain Cargo package version. Update the submodule
+                  # working tree for this build; the submodule itself is not
+                  # changed or committed.
+                  node - <<'NODE'
+                  const fs = require("node:fs");
+                  const version = process.env.PRODUCT_VERSION;
+                  const cargoPath = "Element/Mountain/Cargo.toml";
+                  const cargo = fs.readFileSync(cargoPath, "utf8");
+                  const updated = cargo.replace(/(^version\s*=\s*")[^"]+("\s*$)/m, `$1${version}$2`);
+                  if (updated === cargo) throw new Error(`No package version found in ${cargoPath}`);
+                  fs.writeFileSync(cargoPath, updated);
+                  console.log(`Set Mountain package version to ${version}`);
+                  NODE
 
             - name: Install VS Code platform dependencies
               working-directory: Dependency/Microsoft/Dependency/Editor
               shell: bash
               run: |
-                  pnpm install --frozen-lockfile
-                  pnpm run compile
-                  pnpm run compile-extensions-build
+                  npm install --ignore-scripts --no-audit --no-fund --legacy-peer-deps --no-package-lock
+                  npm install --no-save --ignore-scripts --no-audit --no-fund --legacy-peer-deps \
+                      esbuild@0.28.1 \
+                      glob@7.2.3 \
+                      gulp-merge-json@2.2.1 \
+                      gulp-sort@2.0.0 \
+                      gulp-vinyl-zip@2.5.0 \
+                      jsonc-parser@3.3.1 \
+                      minimatch@3.1.2 \
+                      rcedit@2.3.0 \
+                      rimraf@3.0.2 \
+                      ternary-stream@3.0.0 \
+                      vscode-gulp-watch@5.0.3
+                  if [[ ! -f out/vs/base/common/uri.js ]]; then
+                      npm run gulp -- transpile-client
+                  else
+                      echo "Using cached VS Code compile output"
+                  fi
 
             - name: Install Land dependencies
               shell: bash
-              run: pnpm install --no-frozen-lockfile
+              run: pnpm install --no-frozen-lockfile --prefer-offline --reporter=append-only
+
+            - name: Prepare frontend build inputs
+              shell: bash
+              run: bash Maintain/CI/PrepareFrontend.sh
+
+            - name: Remove stale bundle outputs
+              shell: bash
+              run: |
+                  # Target is cached for Cargo reuse. Never let a cached NSIS
+                  # executable be mistaken for the output of this build.
+                  rm -rf Target/release/bundle Target/debug/bundle
+                  rm -rf Element/Mountain/Target/release/bundle Element/Mountain/Target/debug/bundle
 
             - name: Build release
               shell: bash
               env:
-                  # Release/Build.sh passes this to the Tauri CLI. Restricting
-                  # bundles here prevents an unnecessary MSI build.
+                  # Build only the Windows NSIS installer, not MSI or other
+                  # platform formats. The CLI forwards this to Tauri.
                   TAURI_BUILD_ARGS: --bundles nsis
               run: |
-                  set -euo pipefail
-                  cargo build --release -p Maintain
-                  bash Maintain/Release/Build.sh --profile release
+                  set -o pipefail
+                  {
+                      set -euo pipefail
+                      cargo build --release -p Maintain
+                      bash Maintain/Release/Build.sh --profile release
+                  } 2>&1 | tee release-build.log
 
-            - name: Collect NSIS installer
+            - name: Upload release build log on failure
+              if: failure()
+              uses: actions/upload-artifact@v4
+              with:
+                  name: windows-release-build-log-${{ github.run_number }}
+                  path: release-build.log
+                  if-no-files-found: warn
+
+            - name: Annotate release log on failure
+              if: failure()
+              shell: bash
+              run: |
+                  set +e
+                  {
+                      grep -E -i 'error|failed|fatal|cannot|killed|space|linker|panic' release-build.log
+                      tail -40 release-build.log
+                  } | tail -100 | while IFS= read -r line; do
+                      line=${line//'%'/'%25'}
+                      line=${line//$'\r'/'%0D'}
+                      line=${line//$'\n'/'%0A'}
+                      echo "::error file=.github,line=4633,title=Build release::$line"
+                  done
+
+            - name: Collect and validate NSIS installer
               id: installer
               shell: pwsh
               env:
                   VERSION: ${{ steps.metadata.outputs.version }}
                   BUILD_NUMBER: ${{ steps.metadata.outputs.build_number }}
               run: |
-                  $installer = Get-ChildItem -Path . -Filter *.exe -File -Recurse |
+                  $installer = Get-ChildItem -Path . -Filter '*-setup.exe' -File -Recurse |
                       Where-Object { $_.FullName -match '[\\/]bundle[\\/]nsis[\\/]' } |
+                      Sort-Object LastWriteTime -Descending |
                       Select-Object -First 1
                   if ($null -eq $installer) {
-                      Write-Error "No NSIS installer was produced"
+                      throw 'No NSIS installer was produced under a bundle/nsis directory'
                   }
+
+                  $bytes = [System.IO.File]::ReadAllBytes($installer.FullName)
+                  if ($bytes.Length -lt 2 -or $bytes[0] -ne 0x4d -or $bytes[1] -ne 0x5a) {
+                      throw "Installer is not a Windows PE executable: $($installer.FullName)"
+                  }
+
                   $asset = "Land-$VERSION-build-$BUILD_NUMBER-x64-setup.exe"
-                  Copy-Item $installer.FullName $asset
+                  Copy-Item $installer.FullName $asset -Force
                   "asset=$asset" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
-                  Write-Host "Publishing $asset from $($installer.FullName)"
+                  Write-Host "Publishing $asset from $($installer.FullName) ($($installer.Length) bytes)"
 
             - name: Publish GitHub release
               uses: softprops/action-gh-release@v2

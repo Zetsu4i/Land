@@ -22,88 +22,114 @@ jobs:
         runs-on: ubuntu-latest
 
         env:
-            ADBLOCK: true
+            CI: true
             ASTRO_TELEMETRY_DISABLED: 1
-            AUTOMATEDLAB_TELEMETRY_OPTOUT: 1
-            AZURE_CORE_COLLECT_TELEMETRY: 0
-            CHOOSENIM_NO_ANALYTICS: 1
-            DIEZ_DO_NOT_TRACK: 1
-            DO_NOT_TRACK: 1
-            DOTNET_CLI_TELEMETRY_OPTOUT: 1
-            DOTNET_INTERACTIVE_CLI_TELEMETRY_OPTOUT: 1
-            ET_NO_TELEMETRY: 1
-            GATSBY_TELEMETRY_DISABLED: 1
-            GATSBY_TELEMETRY_OPT_OUT: 1
-            GATSBY_TELEMETRY_OPTOUT: 1
-            GRIT_TELEMETRY_DISABLED: 1
-            HASURA_GRAPHQL_ENABLE_TELEMETRY: false
-            HINT_TELEMETRY: off
-            HOMEBREW_NO_ANALYTICS: 1
-            INFLUXD_REPORTING_DISABLED: true
-            ITERATIVE_DO_NOT_TRACK: 1
-            NEXT_TELEMETRY_DEBUG: 1
             NEXT_TELEMETRY_DISABLED: 1
-            NG_CLI_ANALYTICS: false
-            NUXT_TELEMETRY_DISABLED: 1
-            PIN_DO_NOT_TRACK: 1
-            POWERSHELL_TELEMETRY_OPTOUT: 1
-            SAM_CLI_TELEMETRY: 0
-            STNOUPGRADE: 1
-            STRIPE_CLI_TELEMETRY_OPTOUT: 1
-            TELEMETRY_DISABLED: 1
-            TERRAFORM_TELEMETRY: 0
-            VCPKG_DISABLE_METRICS: 1
+            NODE_OPTIONS: --max-old-space-size=8192
+            # The release pipeline uses esbuild. Rest's optional native
+            # compiler is not part of the frontend artifact and would trigger
+            # a separate Cargo build during Turbo's prepublish graph.
+            REST_SKIP_BUILD: true
 
         strategy:
             matrix:
-                node-version: [18, 19, 20]
+                # pnpm 11 and the current frontend dependencies require a
+                # supported Node runtime. Keep this matrix small because the
+                # generated frontend is cached separately from the store.
+                node-version: [24]
 
         steps:
-            - uses: actions/checkout@v6.0.2
+            - name: Check out repository
+              uses: actions/checkout@v6
               with:
                   fetch-depth: 1
                   submodules: false
 
-            # The repository records submodules with SSH URLs. GitHub-hosted
-            # runners do not have an SSH key, so fetch them using GITHUB_TOKEN.
-            - name: Checkout submodules
+            - name: Check out build submodules
               shell: bash
-              env:
-                  GH_TOKEN: ${{ github.token }}
-              run: |
-                  set -euo pipefail
-                  git config --global url."https://x-access-token:${GH_TOKEN}@github.com/".insteadOf "ssh://git@github.com/"
-                  git config --global url."https://x-access-token:${GH_TOKEN}@github.com/".insteadOf "git@github.com:"
-                  git submodule update --init --recursive
+              run: bash Maintain/CI/CheckoutSubmodules.sh node
 
-            - uses: pnpm/action-setup@v6.0.8
-              with:
-                  version: 9.3.0
-                  run_install: |
-                      - recursive: true
-                        args: [
-                          --link-workspace-packages=true,
-                          --lockfile-only,
-                          --prefer-frozen-lockfile=false,
-                          --shamefully-hoist=false,
-                          --shared-workspace-lockfile=true,
-                          --strict-peer-dependencies=false,
-                          --unsafe-perm=true
-                        ]
-
-            - uses: actions/setup-node@v6.4.0
+            - name: Set up Node.js
+              uses: actions/setup-node@v6
               with:
                   node-version: ${{ matrix.node-version }}
-                  cache: "pnpm"
-                  cache-dependency-path: ./pnpm-lock.yaml
 
-            - run: pnpm install
-              working-directory: .
+            - name: Set up pnpm
+              uses: pnpm/action-setup@v6
+              with:
+                  version: 11.18.0
 
-            - run: pnpm run prepublishOnly
-              working-directory: .
+            - name: Locate pnpm store
+              id: pnpm-store
+              shell: bash
+              run: echo "path=$(pnpm store path --silent)" >> "$GITHUB_OUTPUT"
 
-            - uses: actions/upload-artifact@v7.0.1
+            - name: Cache pnpm store
+              uses: actions/cache@v4
+              with:
+                  path: ${{ steps.pnpm-store.outputs.path }}
+                  key: ${{ runner.os }}-pnpm-v2-${{ hashFiles('package.json', 'pnpm-workspace.yaml', '**/package.json', '**/pnpm-lock.yaml') }}
+                  restore-keys: |
+                      ${{ runner.os }}-pnpm-v2-
+
+            - name: Cache Node dependencies
+              uses: actions/cache@v4
+              with:
+                  path: |
+                      node_modules
+                      **/node_modules
+                  key: ${{ runner.os }}-node-modules-v2-${{ matrix.node-version }}-${{ hashFiles('package.json', 'pnpm-workspace.yaml', '**/package.json', '**/pnpm-lock.yaml', '**/package-lock.json') }}
+                  restore-keys: |
+                      ${{ runner.os }}-node-modules-v2-${{ matrix.node-version }}-
+
+            - name: Cache VS Code platform build
+              uses: actions/cache@v4
+              with:
+                  path: |
+                      Dependency/Microsoft/Dependency/Editor/out
+                      Dependency/Microsoft/Dependency/Editor/.build
+                  key: ${{ runner.os }}-vscode-build-v2-${{ hashFiles('Dependency/Microsoft/Dependency/Editor/package.json', 'Dependency/Microsoft/Dependency/Editor/pnpm-lock.yaml') }}
+                  restore-keys: |
+                      ${{ runner.os }}-vscode-build-v2-
+
+            - name: Install dependencies
+              shell: bash
+              run: pnpm install --no-frozen-lockfile --prefer-offline --reporter=append-only
+
+            - name: Install VS Code platform dependencies
+              working-directory: Dependency/Microsoft/Dependency/Editor
+              shell: bash
+              run: |
+                  npm install --ignore-scripts --no-audit --no-fund --legacy-peer-deps --no-package-lock
+                  npm install --no-save --ignore-scripts --no-audit --no-fund --legacy-peer-deps \
+                      esbuild@0.28.1 \
+                      glob@7.2.3 \
+                      gulp-merge-json@2.2.1 \
+                      gulp-sort@2.0.0 \
+                      gulp-vinyl-zip@2.5.0 \
+                      jsonc-parser@3.3.1 \
+                      minimatch@3.1.2 \
+                      rcedit@2.3.0 \
+                      rimraf@3.0.2 \
+                      ternary-stream@3.0.0 \
+                      vscode-gulp-watch@5.0.3
+                  if [[ ! -f out/vs/base/common/uri.js ]]; then
+                      npm run gulp -- transpile-client
+                  else
+                      echo "Using cached VS Code compile output"
+                  fi
+
+            - name: Prepare frontend build inputs
+              shell: bash
+              run: bash Maintain/CI/PrepareFrontend.sh
+
+            - name: Build frontend artifacts
+              shell: bash
+              run: REST_SKIP_BUILD=true pnpm run prepublishOnly --filter=@codeeditorland/sky --force
+
+            - name: Upload frontend artifacts
+              uses: actions/upload-artifact@v4
               with:
                   name: .-Node-${{ matrix.node-version }}-Target
-                  path: ./Target
+                  path: ./Element/Sky/Target
+                  if-no-files-found: error
